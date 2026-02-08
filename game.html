@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Jump & Duck - Avoid the Spikes!</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: Arial, sans-serif;
+            overflow: hidden;
+            touch-action: none;
+        }
+
+        #gameContainer {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            max-width: 1000px;
+            max-height: 600px;
+        }
+
+        canvas {
+            display: block;
+            border-radius: 10px;
+            touch-action: none;
+        }
+
+        #instructions {
+            position: fixed;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 20px;
+            font-size: 14px;
+            display: none;
+        }
+
+        @media (max-width: 1000px) {
+            #gameContainer {
+                width: 100vw;
+                height: 60vh;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <canvas id="gameCanvas" width="1000" height="600"></canvas>
+    </div>
+    <div id="instructions">Tap top to JUMP • Tap bottom to DUCK</div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Make canvas responsive
+        function resizeCanvas() {
+            const container = document.getElementById('gameContainer');
+            const rect = container.getBoundingClientRect();
+            canvas.width = Math.min(1000, rect.width);
+            canvas.height = Math.min(600, rect.height);
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // Game constants
+        const WIDTH = canvas.width;
+        const HEIGHT = canvas.height;
+        const FPS = 60;
+        const GRAVITY = 1;
+        const JUMP_POWER = 20;
+        const GROUND_Y = HEIGHT - 150;
+
+        // Colors
+        const SKY_BLUE = '#87CEEB';
+        const GROUND_GREEN = '#228B22';
+        const SPIKE_RED = '#FF3232';
+        const PLAYER_ORANGE = '#FF8C00';
+        const BLACK = '#000000';
+        const WHITE = '#FFFFFF';
+
+        // Game state
+        let gameState = {
+            running: false,
+            gameOver: false,
+            score: 0,
+            lives: 3,
+            level: 1,
+            obstacleSpeed: 8,
+            obstacleSpawnDelay: 90,
+            obstacleSpawnTimer: 0,
+            obstacles: [],
+            invincibleTimer: 0,
+            invincibleDuration: 120,
+            distanceTraveled: 0,
+            baseLevelDistance: 3000,
+            levelDistance: 3000,
+            finishLineX: WIDTH + 3000,
+            levelComplete: false,
+            levelCompleteTimer: 0
+        };
+
+        // Player
+        let player = {
+            x: 150,
+            y: GROUND_Y - 60,
+            width: 50,
+            height: 60,
+            normalHeight: 60,
+            duckHeight: 50,
+            velocityY: 0,
+            isJumping: false,
+            isDucking: false,
+            legFrame: 0
+        };
+
+        // Input handling
+        let keys = {};
+        let touchStartY = 0;
+
+        // Keyboard events
+        window.addEventListener('keydown', (e) => {
+            keys[e.key] = true;
+            if (!gameState.gameOver && gameState.running) {
+                if ((e.key === ' ' || e.key === 'ArrowUp') && !player.isJumping) {
+                    jump();
+                }
+                if (e.key === 'ArrowDown') {
+                    duck();
+                }
+            } else if (gameState.gameOver) {
+                restartGame();
+            } else if (!gameState.running) {
+                startGame();
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            keys[e.key] = false;
+            if (e.key === 'ArrowDown') {
+                stopDuck();
+            }
+        });
+
+        // Touch events for mobile
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            const touch = e.touches[0];
+            const rect = canvas.getBoundingClientRect();
+            const touchY = touch.clientY - rect.top;
+            touchStartY = touchY;
+
+            if (!gameState.running && !gameState.gameOver) {
+                startGame();
+                return;
+            }
+
+            if (gameState.gameOver) {
+                restartGame();
+                return;
+            }
+
+            // Lower third = duck, upper = jump
+            if (touchY > canvas.height * 0.66) {
+                duck();
+            } else {
+                if (!player.isJumping) {
+                    jump();
+                }
+            }
+        });
+
+        canvas.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            stopDuck();
+        });
+
+        // Mouse events (for desktop touch screens)
+        canvas.addEventListener('mousedown', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const mouseY = e.clientY - rect.top;
+
+            if (!gameState.running && !gameState.gameOver) {
+                startGame();
+                return;
+            }
+
+            if (gameState.gameOver) {
+                restartGame();
+                return;
+            }
+
+            if (mouseY > canvas.height * 0.66) {
+                duck();
+            } else {
+                if (!player.isJumping) {
+                    jump();
+                }
+            }
+        });
+
+        canvas.addEventListener('mouseup', (e) => {
+            stopDuck();
+        });
+
+        // Player actions
+        function jump() {
+            player.isJumping = true;
+            player.velocityY = -JUMP_POWER;
+        }
+
+        function duck() {
+            player.isDucking = true;
+            player.height = player.duckHeight;
+            player.y = GROUND_Y - player.duckHeight;
+        }
+
+        function stopDuck() {
+            player.isDucking = false;
+            player.height = player.normalHeight;
+            if (!player.isJumping) {
+                player.y = GROUND_Y - player.normalHeight;
+            }
+        }
+
+        // Drawing functions
+        function drawPlayer() {
+            const legOffset = (player.legFrame % 20 < 10) ? 8 : -8;
+
+            ctx.save();
+
+            if (!player.isDucking) {
+                // Standing pose
+                const bodyWidth = player.width;
+                const bodyHeight = player.height * 0.6;
+
+                // Body
+                ctx.fillStyle = PLAYER_ORANGE;
+                ctx.beginPath();
+                ctx.ellipse(player.x + bodyWidth/2, player.y + bodyHeight/2, bodyWidth/2, bodyHeight/2, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.strokeStyle = BLACK;
+                ctx.lineWidth = 3;
+                ctx.stroke();
+
+                // Legs (animated)
+                ctx.fillStyle = PLAYER_ORANGE;
+                ctx.fillRect(player.x + 10 - legOffset, player.y + bodyHeight - 5, 12, 25);
+                ctx.strokeRect(player.x + 10 - legOffset, player.y + bodyHeight - 5, 12, 25);
+                ctx.fillRect(player.x + 28 + legOffset, player.y + bodyHeight - 5, 12, 25);
+                ctx.strokeRect(player.x + 28 + legOffset, player.y + bodyHeight - 5, 12, 25);
+
+                // Feet
+                ctx.fillStyle = BLACK;
+                ctx.beginPath();
+                ctx.ellipse(player.x + 16 - legOffset, player.y + bodyHeight + 18, 8, 4, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.beginPath();
+                ctx.ellipse(player.x + 34 + legOffset, player.y + bodyHeight + 18, 8, 4, 0, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Arms
+                ctx.fillStyle = PLAYER_ORANGE;
+                ctx.fillRect(player.x + 5 + legOffset, player.y + 10, 10, 20);
+                ctx.strokeRect(player.x + 5 + legOffset, player.y + 10, 10, 20);
+                ctx.fillRect(player.x + 35 - legOffset, player.y + 10, 10, 20);
+                ctx.strokeRect(player.x + 35 - legOffset, player.y + 10, 10, 20);
+
+                // Head
+                ctx.fillStyle = PLAYER_ORANGE;
+                ctx.beginPath();
+                ctx.arc(player.x + player.width/2, player.y - 10, 14, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.strokeStyle = BLACK;
+                ctx.lineWidth = 3;
+                ctx.stroke();
+
+                // Eyes
+                ctx.fillStyle = BLACK;
+                ctx.beginPath();
+                ctx.arc(player.x + player.width/2 - 6, player.y - 13, 4, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(player.x + player.width/2 + 6, player.y - 13, 4, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Eye shine
+                ctx.fillStyle = WHITE;
+                ctx.beginPath();
+                ctx.arc(player.x + player.width/2 - 5, player.y - 14, 2, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(player.x + player.width/2 + 7, player.y - 14, 2, 0, Math.PI * 2);
+                ctx.fill();
+
+            } else {
+                // Ducking pose
+                const bodyWidth = player.width * 1.2;
+                const bodyHeight = player.height * 0.7;
+
+                // Body
+                ctx.fillStyle = PLAYER_ORANGE;
+                ctx.beginPath();
+                ctx.ellipse(player.x + bodyWidth/2 - 10, player.y + bodyHeight/2, bodyWidth/2, bodyHeight/2, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.strokeStyle = BLACK;
+                ctx.lineWidth = 3;
+                ctx.stroke();
+
+                // Legs
+                ctx.fillStyle = PLAYER_ORANGE;
+                ctx.fillRect(player.x, player.y + bodyHeight - 10, 18, 15);
+                ctx.strokeRect(player.x, player.y + bodyHeight - 10, 18, 15);
+                ctx.fillRect(player.x + 20, player.y + bodyHeight - 10, 18, 15);
+                ctx.strokeRect(player.x + 20, player.y + bodyHeight - 10, 18, 15);
+
+                // Arm
+                ctx.fillRect(player.x + 35, player.y + 10, 12, 15);
+                ctx.strokeRect(player.x + 35, player.y + 10, 12, 15);
+
+                // Head
+                ctx.fillStyle = PLAYER_ORANGE;
+                ctx.beginPath();
+                ctx.arc(player.x + bodyWidth - 5, player.y + bodyHeight/2, 12, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.strokeStyle = BLACK;
+                ctx.lineWidth = 3;
+                ctx.stroke();
+
+                // Eyes
+                ctx.fillStyle = BLACK;
+                ctx.beginPath();
+                ctx.arc(player.x + bodyWidth - 5, player.y + bodyHeight/2 - 5, 3, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(player.x + bodyWidth - 5, player.y + bodyHeight/2 + 2, 3, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            ctx.restore();
+        }
+
+        function drawGroundSpike(x, y, width, height) {
+            ctx.fillStyle = SPIKE_RED;
+            ctx.beginPath();
+            ctx.moveTo(x + width/2, y);
+            ctx.lineTo(x, y + height);
+            ctx.lineTo(x + width, y + height);
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = BLACK;
+            ctx.lineWidth = 3;
+            ctx.stroke();
+        }
+
+        function drawSkySpike(x, y, width, height) {
+            ctx.fillStyle = SPIKE_RED;
+            ctx.beginPath();
+            ctx.moveTo(x + width/2, y + height);
+            ctx.lineTo(x, y);
+            ctx.lineTo(x + width, y);
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = BLACK;
+            ctx.lineWidth = 3;
+            ctx.stroke();
+        }
+
+        function drawHeart(x, y, size) {
+            ctx.fillStyle = SPIKE_RED;
+            ctx.beginPath();
+            ctx.arc(x - size/6, y, size/3, 0, Math.PI * 2);
+            ctx.arc(x + size/6, y, size/3, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.moveTo(x - size/2, y);
+            ctx.lineTo(x + size/2, y);
+            ctx.lineTo(x, y + size/2);
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = BLACK;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+
+        function drawFinishLine(x) {
+            const flagWidth = 60;
+            const flagHeight = 200;
+            const squareSize = 20;
+            const flagY = GROUND_Y - flagHeight;
+
+            // Pole
+            ctx.fillStyle = BLACK;
+            ctx.fillRect(x, flagY, 5, flagHeight);
+
+            // Checkered pattern
+            for (let row = 0; row < flagHeight / squareSize; row++) {
+                for (let col = 0; col < flagWidth / squareSize; col++) {
+                    ctx.fillStyle = (row + col) % 2 === 0 ? BLACK : WHITE;
+                    ctx.fillRect(x + 5 + col * squareSize, flagY + row * squareSize, squareSize, squareSize);
+                }
+            }
+
+            // Border
+            ctx.strokeStyle = BLACK;
+            ctx.lineWidth = 3;
+            ctx.strokeRect(x + 5, flagY, flagWidth, flagHeight);
+        }
+
+        function spawnObstacle() {
+            const type = Math.random() > 0.5 ? 'ground' : 'sky';
+            const width = 40;
+
+            if (type === 'ground') {
+                const height = 60;
+                gameState.obstacles.push({
+                    type: 'ground',
+                    x: WIDTH,
+                    y: GROUND_Y - height,
+                    width: width,
+                    height: height
+                });
+            } else {
+                const height = 120;
+                gameState.obstacles.push({
+                    type: 'sky',
+                    x: WIDTH,
+                    y: 20,
+                    width: width,
+                    height: height
+                });
+            }
+        }
+
+        function checkCollision(obstacle) {
+            return (player.x < obstacle.x + obstacle.width &&
+                    player.x + player.width > obstacle.x &&
+                    player.y < obstacle.y + obstacle.height &&
+                    player.y + player.height > obstacle.y);
+        }
+
+        function startGame() {
+            gameState.running = true;
+            document.getElementById('instructions').style.display = 'block';
+        }
+
+        function restartGame() {
+            gameState = {
+                running: true,
+                gameOver: false,
+                score: 0,
+                lives: 3,
+                level: 1,
+                obstacleSpeed: 8,
+                obstacleSpawnDelay: 90,
+                obstacleSpawnTimer: 0,
+                obstacles: [],
+                invincibleTimer: 0,
+                invincibleDuration: 120,
+                distanceTraveled: 0,
+                baseLevelDistance: 3000,
+                levelDistance: 3000,
+                finishLineX: WIDTH + 3000,
+                levelComplete: false,
+                levelCompleteTimer: 0
+            };
+            player.y = GROUND_Y - player.normalHeight;
+            player.velocityY = 0;
+            player.isJumping = false;
+            player.isDucking = false;
+            player.height = player.normalHeight;
+        }
+
+        // Game loop
+        function update() {
+            if (!gameState.running && !gameState.gameOver) {
+                return;
+            }
+
+            if (gameState.gameOver) {
+                return;
+            }
+
+            if (gameState.levelComplete) {
+                gameState.levelCompleteTimer--;
+                if (gameState.levelCompleteTimer <= 0) {
+                    gameState.level++;
+                    gameState.levelComplete = false;
+                    gameState.distanceTraveled = 0;
+                    gameState.levelDistance = gameState.baseLevelDistance + (gameState.level - 1) * 1000;
+                    gameState.finishLineX = WIDTH + gameState.levelDistance;
+                    gameState.obstacles = [];
+                    gameState.obstacleSpawnTimer = 0;
+                    gameState.obstacleSpeed += 1;
+                    gameState.obstacleSpawnDelay = Math.max(60, gameState.obstacleSpawnDelay - 5);
+                }
+                return;
+            }
+
+            // Animate player
+            player.legFrame++;
+
+            // Track distance
+            gameState.distanceTraveled += gameState.obstacleSpeed;
+            gameState.finishLineX -= gameState.obstacleSpeed;
+
+            // Check finish line
+            if (player.x >= gameState.finishLineX - 50) {
+                gameState.levelComplete = true;
+                gameState.levelCompleteTimer = 180;
+            }
+
+            // Apply gravity
+            if (player.isJumping) {
+                player.velocityY += GRAVITY;
+                player.y += player.velocityY;
+
+                if (player.y >= GROUND_Y - player.height) {
+                    player.y = GROUND_Y - player.height;
+                    player.isJumping = false;
+                    player.velocityY = 0;
+                }
+            }
+
+            // Spawn obstacles
+            if (gameState.finishLineX > WIDTH + 200) {
+                gameState.obstacleSpawnTimer++;
+                if (gameState.obstacleSpawnTimer >= gameState.obstacleSpawnDelay) {
+                    spawnObstacle();
+                    gameState.obstacleSpawnTimer = 0;
+                }
+            }
+
+            // Move obstacles
+            for (let i = gameState.obstacles.length - 1; i >= 0; i--) {
+                gameState.obstacles[i].x -= gameState.obstacleSpeed;
+
+                if (gameState.obstacles[i].x + gameState.obstacles[i].width < 0) {
+                    gameState.obstacles.splice(i, 1);
+                    gameState.score++;
+                }
+            }
+
+            // Update invincibility
+            if (gameState.invincibleTimer > 0) {
+                gameState.invincibleTimer--;
+            }
+
+            // Check collisions
+            if (gameState.invincibleTimer === 0) {
+                for (let obstacle of gameState.obstacles) {
+                    if (checkCollision(obstacle)) {
+                        gameState.lives--;
+                        gameState.invincibleTimer = gameState.invincibleDuration;
+                        if (gameState.lives <= 0) {
+                            gameState.gameOver = true;
+                            document.getElementById('instructions').style.display = 'none';
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        function draw() {
+            // Clear canvas
+            ctx.fillStyle = SKY_BLUE;
+            ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+            // Draw ground
+            ctx.fillStyle = GROUND_GREEN;
+            ctx.fillRect(0, GROUND_Y, WIDTH, HEIGHT - GROUND_Y);
+            ctx.fillStyle = BLACK;
+            ctx.fillRect(0, GROUND_Y, WIDTH, 5);
+
+            if (!gameState.running && !gameState.gameOver) {
+                // Start screen
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+                ctx.fillStyle = WHITE;
+                ctx.font = 'bold 48px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('JUMP & DUCK', WIDTH/2, HEIGHT/2 - 60);
+
+                ctx.font = '32px Arial';
+                ctx.fillText('Tap to Start', WIDTH/2, HEIGHT/2 + 20);
+
+                ctx.font = '24px Arial';
+                ctx.fillText('Tap upper screen = Jump', WIDTH/2, HEIGHT/2 + 80);
+                ctx.fillText('Tap lower screen = Duck', WIDTH/2, HEIGHT/2 + 110);
+                return;
+            }
+
+            // Draw finish line
+            if (gameState.finishLineX > -100) {
+                drawFinishLine(gameState.finishLineX);
+            }
+
+            // Draw obstacles
+            for (let obstacle of gameState.obstacles) {
+                if (obstacle.type === 'ground') {
+                    drawGroundSpike(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+                } else {
+                    drawSkySpike(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+                }
+            }
+
+            // Draw player (with flashing when invincible)
+            if (gameState.invincibleTimer === 0 || Math.floor(gameState.invincibleTimer / 5) % 2 === 0) {
+                drawPlayer();
+            }
+
+            // Draw UI
+            ctx.fillStyle = BLACK;
+            ctx.font = 'bold 36px Arial';
+            ctx.textAlign = 'left';
+            ctx.fillText(`Score: ${gameState.score}`, 20, 50);
+            ctx.fillText(`Speed: ${gameState.obstacleSpeed.toFixed(1)}`, 20, 95);
+
+            ctx.textAlign = 'right';
+            ctx.fillText(`LEVEL ${gameState.level}`, WIDTH - 20, 50);
+
+            // Lives
+            ctx.textAlign = 'left';
+            ctx.fillText('Lives:', 20, 145);
+            for (let i = 0; i < gameState.lives; i++) {
+                drawHeart(140 + i * 40, 130, 30);
+            }
+
+            // Distance to finish
+            const distanceToFinish = Math.max(0, Math.floor((gameState.finishLineX - player.x) / gameState.obstacleSpeed));
+            if (distanceToFinish > 0 && !gameState.levelComplete) {
+                ctx.textAlign = 'center';
+                ctx.font = '24px Arial';
+                ctx.fillText(`Finish in: ${distanceToFinish}`, WIDTH/2, 40);
+            }
+
+            // Invincibility message
+            if (gameState.invincibleTimer > 0) {
+                ctx.fillStyle = '#FFD700';
+                ctx.font = 'bold 28px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('INVINCIBLE!', WIDTH/2, 120);
+            }
+
+            // Level complete
+            if (gameState.levelComplete) {
+                ctx.fillStyle = 'rgba(255, 215, 0, 0.6)';
+                ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+                ctx.fillStyle = WHITE;
+                ctx.font = 'bold 64px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('LEVEL COMPLETE!', WIDTH/2, HEIGHT/2 - 50);
+
+                ctx.font = '48px Arial';
+                ctx.fillText(`Next: Level ${gameState.level + 1}`, WIDTH/2, HEIGHT/2 + 20);
+
+                const secondsLeft = Math.floor(gameState.levelCompleteTimer / 60) + 1;
+                ctx.font = '36px Arial';
+                ctx.fillText(`Starting in ${secondsLeft}...`, WIDTH/2, HEIGHT/2 + 80);
+            }
+
+            // Game over
+            if (gameState.gameOver) {
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+                ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+                ctx.fillStyle = SPIKE_RED;
+                ctx.font = 'bold 72px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('GAME OVER!', WIDTH/2, HEIGHT/2 - 50);
+
+                ctx.fillStyle = WHITE;
+                ctx.font = '36px Arial';
+                ctx.fillText(`Final Score: ${gameState.score}`, WIDTH/2, HEIGHT/2 + 20);
+                ctx.fillText('Tap or press any key to restart', WIDTH/2, HEIGHT/2 + 80);
+            }
+        }
+
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Start the game loop
+        gameLoop();
+    </script>
+</body>
+</html>
